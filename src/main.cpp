@@ -1,5 +1,6 @@
 #include <iostream>
 #include <cstring>
+#include <string>
 #include <fstream>
 #include <unistd.h>
 #include <sys/socket.h>
@@ -29,6 +30,15 @@ struct request{
     };
 };
 
+void error_404(const int& client_fd){
+    const char* error = 
+        "HTTP/1.1 404 Not Found\r\n"
+        "Connection: close\r\n"
+        "\r\n";
+    write(client_fd, error, strlen(error));
+    close(client_fd);
+}
+
 std::tm get_time(){
     auto now = std::chrono::system_clock::now();
     std::time_t now_time_t = std::chrono::system_clock::to_time_t(now);
@@ -37,7 +47,55 @@ std::tm get_time(){
     return tm_buf;
 }
 
+void menu(const request& current_request, const int client_fd){
+
+    std::ifstream file;
+    if (current_request.path == "/")
+        file.open("../public/index.html");
+    else
+        file.open("../public"+current_request.path);
+
+    if (!file.is_open()) {
+        error_404(client_fd);
+        return;
+    }
+    
+    std::string content(
+        std::istreambuf_iterator<char>{file},
+        std::istreambuf_iterator<char>{});
+
+    std::string response =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/html; charset=utf-8\r\n"
+        "Content-Length: " + std::to_string(content.size()) + "\r\n"
+        "Connection: close\r\n"
+        "\r\n";
+
+    write(client_fd, response.c_str(), response.size());
+    if (!content.empty()) 
+        write(client_fd, content.c_str(), content.size());
+
+    close(client_fd);
+    return;
+}
+
+void logging_in_user_log(const char* buffer, std::ostream& user_log, const tm& now) {
+    std::istringstream stream(buffer);
+    std::string line;
+    int lines_read = 0;
+
+    user_log << "[" << std::put_time(&now, format1) << "] Получен запрос:\n";
+
+    while (lines_read < 3 && std::getline(stream, line)) {
+        user_log << line << '\n';
+        ++lines_read;
+    }
+
+    user_log << std::endl;
+}
+
 int main(){
+
     int server_fd = socket(AF_INET,SOCK_STREAM,0);
     if (server_fd == -1) {
         std::cerr << "Error of creation socket: " << strerror(errno) << std::endl;
@@ -70,6 +128,7 @@ int main(){
     }   
 
     std::ofstream log_file("../log/out.log");
+    std::ofstream user_log("../public/for_users.log");
 
     if(!log_file.is_open()){
         std::cerr << "Error: " << strerror(errno) << std::endl;
@@ -98,6 +157,7 @@ int main(){
 
         char buffer[4096];
         ssize_t bytes_read = read(client_fd, buffer, sizeof(buffer) - 1);
+
         if (bytes_read > 0) {
 
             buffer[bytes_read] = '\0';
@@ -105,15 +165,19 @@ int main(){
             log_file << "[" 
             << std::put_time(&now,format1)
             << "] Получен запрос:\n" << buffer << std::endl;
-            std::cout << "Получен запрос:\n" << buffer << std::endl;
 
+            std::cout << "Получен запрос:\n" << buffer << std::endl;
+            
+            logging_in_user_log(buffer,user_log,now);
+            
             request current_request((std::string)buffer);
             if(!current_request.valid){
                 const char* bad_req = "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n";
                 write(client_fd, bad_req, strlen(bad_req));
+                close(client_fd);
             }
 
-            
+            menu(current_request,client_fd);
         }
 
         close(client_fd);
@@ -121,6 +185,7 @@ int main(){
 
     now = get_time();
     log_file <<"[" <<std::put_time(&now,format1)<<"] Server closed\n";
+
     close(server_fd);
     
     return 0;
